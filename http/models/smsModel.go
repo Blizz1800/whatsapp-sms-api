@@ -6,6 +6,6 @@ type SendMessageRequest struct {
 }
 
 type SendMessageResponse struct {
-	Ok      bool   `json:"ok"`
+	Success bool   `json:"success"`
 	Message string `json:"message"`
 }

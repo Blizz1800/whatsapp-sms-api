@@ -10,14 +10,14 @@ func SmsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method != http.MethodPost {
-		resp := models.SendMessageResponse{Ok: false, Message: "Method not allowed"}
+		resp := models.SendMessageResponse{Success: false, Message: "Method not allowed"}
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
 	if whatAppClient == nil {
-		resp := models.SendMessageResponse{Ok: false, Message: "WhatsApp client not initialized"}
+		resp := models.SendMessageResponse{Success: false, Message: "WhatsApp client not initialized"}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -25,7 +25,7 @@ func SmsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req models.SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		resp := models.SendMessageResponse{Ok: false, Message: "Invalid JSON body"}
+		resp := models.SendMessageResponse{Success: false, Message: "Invalid JSON body"}
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -33,7 +33,7 @@ func SmsHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	if req.Phone == "" || req.Message == "" {
-		resp := models.SendMessageResponse{Ok: false, Message: "Phone and message are required"}
+		resp := models.SendMessageResponse{Success: false, Message: "Phone and message are required"}
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -41,13 +41,13 @@ func SmsHandler(w http.ResponseWriter, r *http.Request) {
 
 	err := whatAppClient.SendMessage(req.Phone, req.Message)
 	if err != nil {
-		resp := models.SendMessageResponse{Ok: false, Message: err.Error()}
+		resp := models.SendMessageResponse{Success: false, Message: err.Error()}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
-	resp := models.SendMessageResponse{Ok: true, Message: "Message sent successfully"}
+	resp := models.SendMessageResponse{Success: true, Message: "Message sent successfully"}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
 }
