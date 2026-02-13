@@ -1,10 +1,12 @@
 package http
 
 import (
+	"fmt"
 	"log"
 	"main/http/handlers"
 	"main/whatsapp"
 	"net/http"
+	"os"
 )
 
 func SetupHandlers(client *whatsapp.WhatsAppClient) {
@@ -13,5 +15,10 @@ func SetupHandlers(client *whatsapp.WhatsAppClient) {
 }
 
 func Serve() {
-	log.Fatal(http.ListenAndServe("0.0.0.0:9050", nil))
+	port := os.Getenv("PORT")
+	if len(port) == 0 {
+		port = "9050"
+	}
+	address := fmt.Sprintf("0.0.0.0:%v", port)
+	log.Fatal(http.ListenAndServe(address, nil))
 }
