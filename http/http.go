@@ -21,5 +21,6 @@ func Serve() {
 		port = "9050"
 	}
 	address := fmt.Sprintf("0.0.0.0:%v", port)
+	log.Default().Printf("Starting server on %s", address)
 	log.Fatal(http.ListenAndServe(address, nil))
 }
