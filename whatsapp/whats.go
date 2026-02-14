@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/mdp/qrterminal"
+	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -47,7 +48,14 @@ func (w *WhatsAppClient) Connect() {
 				// e.g. qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 				// or just manually `echo 2@... | qrencode -t ansiutf8` in a terminal
 				fmt.Println("QR code:", evt.Code)
+				fmt.Println("QR code recibido, generando imagen...")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				err := qrcode.WriteFile(evt.Code, qrcode.Medium, 256, "whatsapp-qr.png")
+				if err != nil {
+					fmt.Println("Error generando QR:", err)
+				} else {
+					fmt.Println("QR guardado como whatsapp-qr.png")
+				}
 			} else {
 				fmt.Println("Login event:", evt.Event)
 			}

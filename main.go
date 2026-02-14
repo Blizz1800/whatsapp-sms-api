@@ -9,7 +9,7 @@ import (
 func main() {
 	fmt.Println("Starting connect the WhatsappApi")
 	whatsAppClient := &whatsapp.WhatsAppClient{}
-	whatsAppClient.Connect()
+	go whatsAppClient.Connect()
 	fmt.Println("WhatsappApi connected successfully")
 
 	http.SetupHandlers(whatsAppClient)
