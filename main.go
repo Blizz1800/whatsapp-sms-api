@@ -2,15 +2,14 @@ package main
 
 import (
 	"fmt"
+	"main/config"
 	"main/http"
 	"main/whatsapp"
 	"time"
-
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	godotenv.Load()
+	config.Load()
 	fmt.Println("Starting connect the WhatsappApi")
 	whatsapp.InitDB()
 	whatsAppClient := whatsapp.NewWhatsAppClient()

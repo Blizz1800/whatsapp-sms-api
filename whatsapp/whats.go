@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"main/config"
 	"main/http/models"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -416,7 +417,8 @@ func (w *WhatsAppClient) Connect() {
 
 	dbLog := waLog.Stdout("Database", "DEBUG", true)
 	w.Ctx = context.Background()
-	container, err := sqlstore.New(w.Ctx, "pgx", os.Getenv("DATABASE_URL"), dbLog)
+	cfg := config.Load()
+	container, err := sqlstore.New(w.Ctx, cfg.Driver(), cfg.DSN(), dbLog)
 	if err != nil {
 		panic(err)
 	}
