@@ -12,3 +12,7 @@ type MessageResponse struct {
 	Message string          `json:"message,omitempty"`
 	Data    *MessageContent `json:"data,omitempty"`
 }
+
+type ProtectMessageRequest struct {
+	MessageID string `json:"message_id"`
+}

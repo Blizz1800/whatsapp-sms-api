@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ type ReceivedMessage struct {
 }
 
 type forwardableMessage struct {
+	senderLID          string
 	text               string
 	imageURL           string
 	imageDirectPath    string
@@ -74,7 +76,6 @@ func getMessageFields(v *events.Message) (text string, fm *forwardableMessage) {
 			imageFileLength:    img.GetFileLength(),
 			imageMimeType:      img.GetMimetype(),
 			imageCaption:       img.GetCaption(),
-			imageJPEGThumbnail: img.GetJPEGThumbnail(),
 			imageHeight:        img.GetHeight(),
 			imageWidth:         img.GetWidth(),
 		}
@@ -276,12 +277,36 @@ func (w *WhatsAppClient) EventHandler(evt interface{}) {
 		if fm == nil {
 			fm = &forwardableMessage{text: text}
 		}
+		fm.senderLID = sender
 		w.forwardableMessages[v.Info.ID] = fm
-		SaveForwardableMessage(v.Info.ID, sender, fm)
 		w.mu.Unlock()
 
 		fmt.Printf("📩 Message from %s: %s\n", sender, text)
 	}
+}
+
+// ProtectMessage persists the forwardable data of a message (found in memory
+// or already saved) so it survives API restarts and is kept by the cleanup job.
+func (w *WhatsAppClient) ProtectMessage(id string) bool {
+	w.mu.RLock()
+	fm, ok := w.forwardableMessages[id]
+	w.mu.RUnlock()
+
+	if !ok {
+		fm = LoadForwardableMessage(id)
+		if fm == nil {
+			return false
+		}
+		return true
+	}
+
+	return SaveForwardableMessage(id, fm.senderLID, fm)
+}
+
+// UnprotectMessage removes the persisted row of a message whose schedule is done.
+func (w *WhatsAppClient) UnprotectMessage(id string) bool {
+	DeleteForwardableMessage(id)
+	return true
 }
 
 func isNewsletter(jid types.JID) bool {
@@ -376,13 +401,34 @@ func (w *WhatsAppClient) ForwardReceivedMessage(id string, recipients []string, 
 	return results
 }
 
+// canWriteGroup reports whether the bot is allowed to send messages to the group.
+func canWriteGroup(g *types.GroupInfo, botJID types.JID) bool {
+	if !g.IsAnnounce {
+		return true
+	}
+	for _, p := range g.Participants {
+		if p.JID.ToNonAD() == botJID && (p.IsAdmin || p.IsSuperAdmin) {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *WhatsAppClient) GetGroupsAndNewsletters() ([]models.GroupItem, error) {
 	var items []models.GroupItem
 	index := 1
 
 	groups, err := w.Client.GetJoinedGroups(w.Ctx)
 	if err == nil {
+		botJID := w.Client.Store.ID.ToNonAD()
+		// Sort by group creation date (immutable) so the index order never changes.
+		sort.SliceStable(groups, func(i, j int) bool {
+			return groups[i].GroupCreated.Before(groups[j].GroupCreated)
+		})
 		for _, g := range groups {
+			if !canWriteGroup(g, botJID) {
+				continue
+			}
 			items = append(items, models.GroupItem{
 				Index: index,
 				Name:  g.Name,
@@ -395,7 +441,14 @@ func (w *WhatsAppClient) GetGroupsAndNewsletters() ([]models.GroupItem, error) {
 
 	newsletters, err := w.Client.GetSubscribedNewsletters(w.Ctx)
 	if err == nil {
+		// Sort by JID (stable) so channel order also never changes.
+		sort.Slice(newsletters, func(i, j int) bool {
+			return newsletters[i].ID.String() < newsletters[j].ID.String()
+		})
 		for _, n := range newsletters {
+			if n.ViewerMeta == nil || (n.ViewerMeta.Role != types.NewsletterRoleAdmin && n.ViewerMeta.Role != types.NewsletterRoleOwner) {
+				continue
+			}
 			name := n.ThreadMeta.Name.Text
 			if name == "" {
 				name = "Canal sin nombre"
