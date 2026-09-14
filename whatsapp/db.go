@@ -58,9 +58,9 @@ func createTables() {
 	}
 }
 
-func SaveForwardableMessage(messageID, senderLID string, fm *forwardableMessage) {
+func SaveForwardableMessage(messageID, senderLID string, fm *forwardableMessage) bool {
 	if db == nil {
-		return
+		return true
 	}
 
 	query := `
@@ -92,7 +92,9 @@ func SaveForwardableMessage(messageID, senderLID string, fm *forwardableMessage)
 	)
 	if err != nil {
 		fmt.Printf("Error saving forwardable message: %v\n", err)
+		return false
 	}
+	return true
 }
 
 func LoadForwardableMessage(messageID string) *forwardableMessage {
@@ -122,4 +124,32 @@ func LoadForwardableMessage(messageID string) *forwardableMessage {
 	}
 
 	return fm
+}
+
+func DeleteForwardableMessage(messageID string) {
+	if db == nil {
+		return
+	}
+	if _, err := db.Exec("DELETE FROM forwardable_messages WHERE message_id = $1", messageID); err != nil {
+		fmt.Printf("Error deleting forwardable message: %v\n", err)
+	}
+}
+
+func DeleteOldForwardableMessages(retentionDays int) int64 {
+	if db == nil {
+		return 0
+	}
+	res, err := db.Exec(
+		"DELETE FROM forwardable_messages WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+		retentionDays,
+	)
+	if err != nil {
+		fmt.Printf("Error cleaning old forwardable messages: %v\n", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		fmt.Printf("Cleaned up %d old forwardable message(s)\n", n)
+	}
+	return n
 }
