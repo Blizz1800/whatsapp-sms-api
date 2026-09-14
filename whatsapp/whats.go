@@ -44,6 +44,7 @@ type ReceivedMessage struct {
 }
 
 type forwardableMessage struct {
+	senderLID          string
 	text               string
 	imageURL           string
 	imageDirectPath    string
@@ -74,7 +75,6 @@ func getMessageFields(v *events.Message) (text string, fm *forwardableMessage) {
 			imageFileLength:    img.GetFileLength(),
 			imageMimeType:      img.GetMimetype(),
 			imageCaption:       img.GetCaption(),
-			imageJPEGThumbnail: img.GetJPEGThumbnail(),
 			imageHeight:        img.GetHeight(),
 			imageWidth:         img.GetWidth(),
 		}
@@ -276,12 +276,36 @@ func (w *WhatsAppClient) EventHandler(evt interface{}) {
 		if fm == nil {
 			fm = &forwardableMessage{text: text}
 		}
+		fm.senderLID = sender
 		w.forwardableMessages[v.Info.ID] = fm
-		SaveForwardableMessage(v.Info.ID, sender, fm)
 		w.mu.Unlock()
 
 		fmt.Printf("📩 Message from %s: %s\n", sender, text)
 	}
+}
+
+// ProtectMessage persists the forwardable data of a message (found in memory
+// or already saved) so it survives API restarts and is kept by the cleanup job.
+func (w *WhatsAppClient) ProtectMessage(id string) bool {
+	w.mu.RLock()
+	fm, ok := w.forwardableMessages[id]
+	w.mu.RUnlock()
+
+	if !ok {
+		fm = LoadForwardableMessage(id)
+		if fm == nil {
+			return false
+		}
+		return true
+	}
+
+	return SaveForwardableMessage(id, fm.senderLID, fm)
+}
+
+// UnprotectMessage removes the persisted row of a message whose schedule is done.
+func (w *WhatsAppClient) UnprotectMessage(id string) bool {
+	DeleteForwardableMessage(id)
+	return true
 }
 
 func isNewsletter(jid types.JID) bool {
