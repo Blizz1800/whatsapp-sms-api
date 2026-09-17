@@ -67,13 +67,13 @@ func createTables() {
 
 func SaveForwardableMessage(messageID, senderLID string, fm *forwardableMessage) bool {
 	if db == nil {
-		return true
+		return false
 	}
 
 	query, err := loadQuery("save_forwardable_message")
 	if err != nil {
 		fmt.Printf("Error loading query: %v\n", err)
-		return
+		return false
 	}
 
 	_, err = db.Exec(query,
