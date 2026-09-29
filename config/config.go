@@ -8,14 +8,20 @@ import (
 )
 
 type Config struct {
-	DBType      string
-	DatabaseURL string
+	DBType               string
+	DatabaseURL          string
+	CleanupIntervalHours int
+	MsgRetentionDays     int
 }
 
 const defaultConfigPath = "app.conf"
 
 func Load() *Config {
-	cfg := &Config{DBType: "postgres"}
+	cfg := &Config{
+		DBType:               "postgres",
+		CleanupIntervalHours: 24,
+		MsgRetentionDays:     30,
+	}
 	parseFile(cfg, defaultConfigPath)
 	applyEnvOverrides(cfg)
 	return cfg
