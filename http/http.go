@@ -15,6 +15,7 @@ func SetupHandlers(client *whatsapp.WhatsAppClient) {
 	http.Handle("/forward", http.HandlerFunc(handlers.ForwardHandler))
 	http.Handle("/reaction", http.HandlerFunc(handlers.ReactionHandler))
 	http.Handle("/qr", http.HandlerFunc(handlers.QRHandler))
+	http.Handle("/pair", http.HandlerFunc(handlers.PairHandler))
 	http.Handle("/inbox", http.HandlerFunc(handlers.InboxHandler))
 	http.Handle("/message", http.HandlerFunc(handlers.MessageHandler))
 	http.Handle("/message/protect", http.HandlerFunc(handlers.ProtectMessageHandler))

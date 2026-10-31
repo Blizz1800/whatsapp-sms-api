@@ -185,6 +185,12 @@ type WhatsAppClient struct {
 	recentSelf          map[string]time.Time
 
 	Connected chan struct{}
+
+	clientMu       sync.RWMutex
+	loginReady     chan struct{}
+	loginReadyOnce sync.Once
+	connectedOnce  sync.Once
+	pairMu         sync.Mutex
 }
 
 const selfDedupWindow = 30 * time.Second
@@ -192,6 +198,7 @@ const selfDedupWindow = 30 * time.Second
 func NewWhatsAppClient() *WhatsAppClient {
 	return &WhatsAppClient{
 		Connected:           make(chan struct{}),
+		loginReady:          make(chan struct{}),
 		forwardableMessages: make(map[string]*forwardableMessage),
 		sentMessageIDs:      make(map[string]bool),
 		recentSelf:          make(map[string]time.Time),
@@ -467,7 +474,6 @@ func (w *WhatsAppClient) GetGroupsAndNewsletters() ([]models.GroupItem, error) {
 }
 
 func (w *WhatsAppClient) Connect() {
-
 	dbLog := waLog.Stdout("Database", "DEBUG", true)
 	w.Ctx = context.Background()
 	cfg := config.Load()
@@ -481,18 +487,35 @@ func (w *WhatsAppClient) Connect() {
 		panic(err)
 	}
 	clientLog := waLog.Stdout("Client", "INFO", true)
-	w.Client = whatsmeow.NewClient(deviceStore, clientLog)
-	w.Client.AddEventHandler(w.EventHandler)
+	client := whatsmeow.NewClient(deviceStore, clientLog)
+	w.setClient(client)
+	client.AddEventHandler(w.EventHandler)
 
-	if w.Client.Store.ID == nil {
-		// No ID stored, new login
-		qrChan, _ := w.Client.GetQRChannel(context.Background())
-		err = w.Client.Connect()
+	if client.Store.ID != nil {
+		// Already logged in, just connect
+		if err := client.Connect(); err != nil {
+			panic(err)
+		}
+		w.markLoginReady()
+		w.markConnected()
+		return
+	}
+
+	// No ID stored, start a login session. If the QR codes expire before the
+	// account is linked, start a new session so the QR/pairing code stays
+	// available while the service is running.
+	for {
+		qrChan, err := client.GetQRChannel(context.Background())
 		if err != nil {
 			panic(err)
 		}
+		if err := client.Connect(); err != nil {
+			panic(err)
+		}
+
 		for evt := range qrChan {
-			if evt.Event == "code" {
+			if evt.Event == whatsmeow.QRChannelEventCode {
+				w.markLoginReady()
 				// Render the QR code here
 				// e.g. qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 				// or just manually `echo 2@... | qrencode -t ansiutf8` in a terminal
@@ -505,18 +528,21 @@ func (w *WhatsAppClient) Connect() {
 				} else {
 					fmt.Println("QR guardado como whatsapp-qr.png")
 				}
-			} else {
-				fmt.Println("Login event:", evt.Event)
+				continue
+			}
+
+			fmt.Println("Login event:", evt.Event)
+			if evt.Event == whatsmeow.QRChannelSuccess.Event {
+				w.markLoginReady()
+				w.markConnected()
 			}
 		}
-		close(w.Connected)
-	} else {
-		// Already logged in, just connect
-		err = w.Client.Connect()
-		if err != nil {
-			panic(err)
+
+		if client.Store.ID != nil {
+			return
 		}
-		close(w.Connected)
+		fmt.Println("QR login session ended, generating a new one...")
+		time.Sleep(5 * time.Second)
 	}
 }
 
