@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"main/http/models"
 	"net/http"
+	"time"
 )
 
 func ForwardReceivedHandler(w http.ResponseWriter, r *http.Request) {
@@ -46,15 +48,21 @@ func ForwardReceivedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
 	results := whatAppClient.ForwardReceivedMessage(req.MessageID, req.Recipients, req.CaptionOverride)
 
 	allSuccess := true
+	okCount := 0
 	for _, res := range results {
 		if !res.Success {
 			allSuccess = false
-			break
+		} else {
+			okCount++
 		}
 	}
+	log.Printf("forward_received: id=%s recipients=%d ok=%d fail=%d success=%v duration=%s",
+		req.MessageID, len(req.Recipients), okCount, len(results)-okCount,
+		allSuccess, time.Since(start))
 
 	status := http.StatusOK
 	msg := "Message forwarded successfully"

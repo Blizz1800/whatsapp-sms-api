@@ -369,13 +369,7 @@ func (w *WhatsAppClient) ForwardReceivedMessage(id string, recipients []string, 
 					},
 				}
 			}
-			sentMsg, err := w.Client.SendMessage(w.Ctx, jid, waMessage)
-			if err != nil {
-				results = append(results, models.ForwardResult{Recipient: recipient, Success: false, Error: err.Error()})
-			} else {
-				w.recordSentMessage(sentMsg.ID)
-				results = append(results, models.ForwardResult{Recipient: recipient, Success: true})
-			}
+			results = append(results, w.sendToRecipient(recipient, jid, waMessage))
 		}
 		return results
 	}
@@ -398,13 +392,7 @@ func (w *WhatsAppClient) ForwardReceivedMessage(id string, recipients []string, 
 			continue
 		}
 
-		sentMsg, err := w.Client.SendMessage(w.Ctx, jid, waMessage)
-		if err != nil {
-			results = append(results, models.ForwardResult{Recipient: recipient, Success: false, Error: err.Error()})
-		} else {
-			w.recordSentMessage(sentMsg.ID)
-			results = append(results, models.ForwardResult{Recipient: recipient, Success: true})
-		}
+		results = append(results, w.sendToRecipient(recipient, jid, waMessage))
 	}
 	return results
 }
