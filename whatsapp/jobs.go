@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"main/config"
+
 	"github.com/google/uuid"
 )
 
@@ -194,4 +196,91 @@ func getJobByIdempotencyKey(ctx context.Context, sessionID, idempotencyKey strin
 		return nil, fmt.Errorf("get existing message job: %w", err)
 	}
 	return job, nil
+}
+
+type JobUpdate struct {
+	Status                   string
+	Attempts                 int
+	NextAttemptAt, LastError string
+	StartedAt, FinishedAt    string
+	Result                   *JobResult
+}
+
+func ClaimNextJob(ctx context.Context, now string) (*Job, error) {
+	if db == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	query, err := loadQuery("claim_next_job")
+	if err != nil {
+		return nil, fmt.Errorf("load claim next job query: %w", err)
+	}
+	cfg := config.Load()
+	var row rowScanner
+	if cfg.DBType == "sqlite" {
+		row = db.QueryRowContext(ctx, query, now, now, now)
+	} else {
+		row = db.QueryRowContext(ctx, query, now)
+	}
+	job, err := scanJob(row)
+	if errors.Is(err, ErrJobNotFound) {
+		return nil, nil
+	}
+	return job, err
+}
+
+func UpdateJob(ctx context.Context, id string, update JobUpdate) error {
+	if db == nil {
+		return errors.New("database is not initialized")
+	}
+	var result string
+	if update.Result != nil {
+		encoded, err := json.Marshal(update.Result)
+		if err != nil {
+			return fmt.Errorf("marshal message job result: %w", err)
+		}
+		result = string(encoded)
+	}
+	query, err := loadQuery("update_job")
+	if err != nil {
+		return fmt.Errorf("load update job query: %w", err)
+	}
+	updatedAt := nowTS()
+	args := []any{
+		id, update.Status, update.Attempts, update.NextAttemptAt, update.LastError,
+		result, updatedAt, update.StartedAt, update.FinishedAt,
+	}
+	if config.Load().DBType == "sqlite" {
+		args = []any{
+			update.Status, update.Attempts, update.NextAttemptAt, update.LastError,
+			result, updatedAt, update.StartedAt, update.FinishedAt, id,
+		}
+	}
+	res, err := db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("update message job: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count updated message job rows: %w", err)
+	}
+	if affected == 0 {
+		return ErrJobNotFound
+	}
+	return nil
+}
+
+func RequeueJob(ctx context.Context, id, now string) error {
+	job, err := GetJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	return UpdateJob(ctx, id, JobUpdate{
+		Status:        JobStatusQueued,
+		Attempts:      job.Attempts,
+		NextAttemptAt: now,
+		LastError:     job.LastError,
+		StartedAt:     "",
+		FinishedAt:    "",
+		Result:        job.Result,
+	})
 }

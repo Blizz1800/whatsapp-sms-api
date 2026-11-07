@@ -89,3 +89,109 @@ func TestGetJobNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want ErrJobNotFound", err)
 	}
 }
+
+func TestClaimNextJobOrdersByPriority(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	low, _, err := CreateJob(ctx, Job{ChatID: "low@s.whatsapp.net", Priority: 0, Payload: JobPayload{Type: "text", Text: "low"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, _, err := CreateJob(ctx, Job{ChatID: "high@s.whatsapp.net", Priority: 100, Payload: JobPayload{Type: "text", Text: "high"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ClaimNextJob(ctx, nowTS())
+	if err != nil || first == nil {
+		t.Fatalf("first claim: job=%v err=%v", first, err)
+	}
+	if first.ID != high.ID || first.Status != JobStatusRunning {
+		t.Fatalf("first = %q status=%q, want %q/running", first.ID, first.Status, high.ID)
+	}
+	second, err := ClaimNextJob(ctx, nowTS())
+	if err != nil || second == nil || second.ID != low.ID {
+		t.Fatalf("second claim: job=%v err=%v, want %q", second, err, low.ID)
+	}
+	third, err := ClaimNextJob(ctx, nowTS())
+	if err != nil || third != nil {
+		t.Fatalf("third claim: job=%v err=%v, want nil", third, err)
+	}
+}
+
+func TestClaimNextJobRespectsNextAttemptAt(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	if _, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", NextAttemptAt: future, Payload: JobPayload{Type: "text", Text: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	job, err := ClaimNextJob(ctx, nowTS())
+	if err != nil || job != nil {
+		t.Fatalf("job=%v err=%v, want nil", job, err)
+	}
+}
+
+func TestUpdateJobPersistsSucceededState(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	job, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", Payload: JobPayload{Type: "text", Text: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := ClaimNextJob(ctx, nowTS())
+	if err != nil || running == nil {
+		t.Fatalf("claim: job=%v err=%v", running, err)
+	}
+	now := nowTS()
+	err = UpdateJob(ctx, running.ID, JobUpdate{
+		Status:     JobStatusSucceeded,
+		Attempts:   1,
+		StartedAt:  now,
+		FinishedAt: now,
+		Result:     &JobResult{MessageID: "MID", ChatID: "a@s.whatsapp.net", SentAt: now},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != JobStatusSucceeded || got.Attempts != 1 || got.Result == nil || got.Result.MessageID != "MID" {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestRequeueJobPreservesAttemptsAndClearsTimes(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	job, _, err := CreateJob(ctx, Job{
+		ChatID:      "a@s.whatsapp.net",
+		Status:      JobStatusFailed,
+		Attempts:    2,
+		StartedAt:   "2026-01-02T03:04:05Z",
+		FinishedAt:  "2026-01-02T03:04:10Z",
+		LastError:   "temporary failure",
+		Payload:     JobPayload{Type: "text", Text: "a"},
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := "2026-01-02T03:05:00Z"
+	if err := RequeueJob(ctx, job.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != JobStatusQueued || got.Attempts != 2 || got.NextAttemptAt != now {
+		t.Fatalf("status/attempts/nextAttemptAt = %q/%d/%q", got.Status, got.Attempts, got.NextAttemptAt)
+	}
+	if got.StartedAt != "" || got.FinishedAt != "" {
+		t.Fatalf("started/finished = %q/%q, want empty", got.StartedAt, got.FinishedAt)
+	}
+}
