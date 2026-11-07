@@ -35,7 +35,10 @@ func InitDB() {
 		return
 	}
 
-	createTables()
+	if err := createTables(); err != nil {
+		fmt.Printf("Error creating tables: %v\n", err)
+		return
+	}
 	fmt.Printf("Database initialized successfully (%s)\n", cfg.DBType)
 }
 
@@ -59,9 +62,20 @@ func runQuery(query string) error {
 	return nil
 }
 
-func createTables() {
+func createTables() error {
 	if err := runQuery("create_table_forwardable_messages"); err != nil {
-		fmt.Printf("Error creating tables: %v\n", err)
+		return fmt.Errorf("create forwardable messages table: %w", err)
+	}
+	if err := runQuery("create_table_message_jobs"); err != nil {
+		return fmt.Errorf("create message jobs table: %w", err)
+	}
+	return nil
+}
+
+func CloseDB() {
+	if db != nil {
+		_ = db.Close()
+		db = nil
 	}
 }
 
