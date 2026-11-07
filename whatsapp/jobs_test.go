@@ -195,3 +195,151 @@ func TestRequeueJobPreservesAttemptsAndClearsTimes(t *testing.T) {
 		t.Fatalf("started/finished = %q/%q, want empty", got.StartedAt, got.FinishedAt)
 	}
 }
+
+func TestRetryJobResetsFailedJob(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	job, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", Payload: JobPayload{Type: "text", Text: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimNextJob(ctx, nowTS()); err != nil {
+		t.Fatal(err)
+	}
+	now := nowTS()
+	if err := UpdateJob(ctx, job.ID, JobUpdate{Status: JobStatusFailed, Attempts: 3, LastError: "boom", FinishedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	got, retried, err := RetryJob(ctx, job.ID, now)
+	if err != nil || !retried {
+		t.Fatalf("retried=%v err=%v", retried, err)
+	}
+	if got.Status != JobStatusQueued || got.Attempts != 0 || got.Generation != 1 {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestRetryJobDoesNotRetrySucceeded(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	job, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", Payload: JobPayload{Type: "text", Text: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateJob(ctx, job.ID, JobUpdate{Status: JobStatusSucceeded, Attempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got, retried, err := RetryJob(ctx, job.ID, nowTS())
+	if err != nil || retried || got.Status != JobStatusSucceeded {
+		t.Fatalf("retried=%v status=%q err=%v", retried, got.Status, err)
+	}
+}
+
+func TestRecoverRunningJobsConsumesAttempt(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	job, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", Payload: JobPayload{Type: "text", Text: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimNextJob(ctx, nowTS()); err != nil {
+		t.Fatal(err)
+	}
+	n, err := RecoverRunningJobs(ctx, nowTS())
+	if err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v, want 1", n, err)
+	}
+	got, err := GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != JobStatusQueued || got.Attempts != 1 {
+		t.Fatalf("got status=%q attempts=%d, want queued/1", got.Status, got.Attempts)
+	}
+}
+
+func TestRecoverRunningJobsExhaustedBecomesUnknown(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	job, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", MaxAttempts: 1, Payload: JobPayload{Type: "text", Text: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimNextJob(ctx, nowTS()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecoverRunningJobs(ctx, nowTS()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != JobStatusUnknown || got.Attempts != 1 {
+		t.Fatalf("got status=%q attempts=%d, want unknown/1", got.Status, got.Attempts)
+	}
+}
+
+func TestJobCounts(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	if _, _, err := CreateJob(ctx, Job{ChatID: "a@s.whatsapp.net", Payload: JobPayload{Type: "text", Text: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	all, since, err := JobCounts(ctx, nowTS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all[JobStatusQueued] != 1 {
+		t.Fatalf("queued = %d, want 1", all[JobStatusQueued])
+	}
+	if len(since) != 0 {
+		t.Fatalf("since = %v, want empty", since)
+	}
+}
+
+func TestSweepStaleRunningJobsLeavesRecentJobsRunning(t *testing.T) {
+	setupJobTestDB(t)
+	ctx := context.Background()
+	stale, _, err := CreateJob(ctx, Job{
+		ChatID:   "stale@s.whatsapp.net",
+		Priority: 100,
+		Payload:  JobPayload{Type: "text", Text: "stale"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recent, _, err := CreateJob(ctx, Job{
+		ChatID:   "recent@s.whatsapp.net",
+		Priority: 0,
+		Payload:  JobPayload{Type: "text", Text: "recent"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimNextJob(ctx, "2026-01-02T03:04:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimNextJob(ctx, "2026-01-02T03:06:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := SweepStaleRunningJobs(ctx, "2026-01-02T03:10:00Z", "2026-01-02T03:05:00Z")
+	if err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v, want 1", n, err)
+	}
+	gotStale, err := GetJob(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRecent, err := GetJob(ctx, recent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotStale.Status != JobStatusQueued || gotStale.Attempts != 1 {
+		t.Fatalf("stale job status/attempts = %q/%d, want queued/1", gotStale.Status, gotStale.Attempts)
+	}
+	if gotRecent.Status != JobStatusRunning || gotRecent.Attempts != 0 {
+		t.Fatalf("recent job status/attempts = %q/%d, want running/0", gotRecent.Status, gotRecent.Attempts)
+	}
+}

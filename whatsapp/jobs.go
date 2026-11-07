@@ -284,3 +284,155 @@ func RequeueJob(ctx context.Context, id, now string) error {
 		Result:        job.Result,
 	})
 }
+
+func RetryJob(ctx context.Context, id, now string) (*Job, bool, error) {
+	if db == nil {
+		return nil, false, errors.New("database is not initialized")
+	}
+	query, err := loadQuery("retry_job")
+	if err != nil {
+		return nil, false, fmt.Errorf("load retry job query: %w", err)
+	}
+	var res sql.Result
+	if config.Load().DBType == "sqlite" {
+		res, err = db.ExecContext(ctx, query, now, id)
+	} else {
+		res, err = db.ExecContext(ctx, query, id, now)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("retry message job: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("count retried message job rows: %w", err)
+	}
+	if affected == 0 {
+		job, err := GetJob(ctx, id)
+		if err != nil {
+			return nil, false, err
+		}
+		return job, false, nil
+	}
+	job, err := GetJob(ctx, id)
+	return job, true, err
+}
+
+func listRunningJobs(ctx context.Context) ([]*Job, error) {
+	if db == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	query, err := loadQuery("list_running_jobs")
+	if err != nil {
+		return nil, fmt.Errorf("load running jobs query: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list running message jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate running message jobs: %w", err)
+	}
+	return jobs, nil
+}
+
+func recoveredJobUpdate(job *Job, now string) JobUpdate {
+	attempts := job.Attempts + 1
+	update := JobUpdate{
+		Status:        JobStatusQueued,
+		Attempts:      attempts,
+		NextAttemptAt: now,
+		LastError:     "recovered from running",
+		StartedAt:     "",
+		FinishedAt:    "",
+		Result:        job.Result,
+	}
+	if attempts >= job.MaxAttempts {
+		update.Status = JobStatusUnknown
+		update.NextAttemptAt = ""
+		update.FinishedAt = now
+	}
+	return update
+}
+
+func RecoverRunningJobs(ctx context.Context, now string) (int, error) {
+	jobs, err := listRunningJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	recovered := 0
+	for _, job := range jobs {
+		if err := UpdateJob(ctx, job.ID, recoveredJobUpdate(job, now)); err != nil {
+			return recovered, fmt.Errorf("recover message job %s: %w", job.ID, err)
+		}
+		recovered++
+	}
+	return recovered, nil
+}
+
+func SweepStaleRunningJobs(ctx context.Context, now, cutoff string) (int, error) {
+	jobs, err := listRunningJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	swept := 0
+	for _, job := range jobs {
+		if job.StartedAt >= cutoff {
+			continue
+		}
+		if err := UpdateJob(ctx, job.ID, recoveredJobUpdate(job, now)); err != nil {
+			return swept, fmt.Errorf("sweep stale message job %s: %w", job.ID, err)
+		}
+		swept++
+	}
+	return swept, nil
+}
+
+func JobCounts(ctx context.Context, since string) (map[string]int, map[string]int, error) {
+	if db == nil {
+		return nil, nil, errors.New("database is not initialized")
+	}
+	all, err := countJobs(ctx, "job_counts", nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	sinceCounts, err := countJobs(ctx, "job_counts_since", []any{since})
+	if err != nil {
+		return nil, nil, err
+	}
+	return all, sinceCounts, nil
+}
+
+func countJobs(ctx context.Context, queryName string, args []any) (map[string]int, error) {
+	query, err := loadQuery(queryName)
+	if err != nil {
+		return nil, fmt.Errorf("load %s query: %w", queryName, err)
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query %s: %w", queryName, err)
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("scan %s: %w", queryName, err)
+		}
+		counts[status] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s: %w", queryName, err)
+	}
+	return counts, nil
+}
