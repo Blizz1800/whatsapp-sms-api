@@ -1,0 +1,1 @@
+ALTER TABLE forwardable_messages ADD COLUMN IF NOT EXISTS protected INTEGER NOT NULL DEFAULT 0

@@ -13,6 +13,7 @@ func main() {
 	whatsapp.InitDB()
 	whatsapp.StartCleanupLoop()
 	whatsAppClient := whatsapp.NewWhatsAppClient()
+	whatsapp.StartJobWorker(whatsAppClient)
 	http.SetupHandlers(whatsAppClient)
 	fmt.Println("HTTP handlers set up successfully")
 	go whatsAppClient.Connect()

@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -23,12 +24,18 @@ func (w *WhatsAppClient) SendMessage(number string, message string) error {
 		Conversation: proto.String(message),
 	}
 
-	msg, err := w.Client.SendMessage(w.Ctx, jid, waMessage)
+	if err := w.waitSendTurn(w.Ctx); err != nil {
+		return err
+	}
+	msg, _, err := sendRecipient(w.Ctx, recipientSendTimeout, func(ctx context.Context) (types.MessageID, error) {
+		resp, err := w.Client.SendMessage(ctx, jid, waMessage)
+		return resp.ID, err
+	})
 	if err != nil {
 		return err
 	}
-	lastMessageId = msg.ID
-	w.recordSentMessage(msg.ID)
+	lastMessageId = msg
+	w.recordSentMessage(msg)
 	return nil
 }
 
@@ -42,20 +49,37 @@ func (w *WhatsAppClient) SendMessageToJID(jidStr string, message string) error {
 		Conversation: proto.String(message),
 	}
 
-	msg, err := w.Client.SendMessage(w.Ctx, jid, waMessage)
+	if err := w.waitSendTurn(w.Ctx); err != nil {
+		return err
+	}
+	msg, _, err := sendRecipient(w.Ctx, recipientSendTimeout, func(ctx context.Context) (types.MessageID, error) {
+		resp, err := w.Client.SendMessage(ctx, jid, waMessage)
+		return resp.ID, err
+	})
 	if err != nil {
 		return err
 	}
-	lastMessageId = msg.ID
-	w.recordSentMessage(msg.ID)
+	lastMessageId = msg
+	w.recordSentMessage(msg)
 	return nil
 }
 
 func (w *WhatsAppClient) SendReaction(number string, reaction string) error {
 	target := types.NewJID(number, types.DefaultUserServer)
 	message := w.Client.BuildReaction(target, w.Client.Store.GetJID(), lastMessageId, reaction)
-	_, err := w.Client.SendMessage(w.Ctx, target, message)
-	return err
+	if err := w.waitSendTurn(w.Ctx); err != nil {
+		return err
+	}
+	msg, _, err := sendRecipient(w.Ctx, recipientSendTimeout, func(ctx context.Context) (types.MessageID, error) {
+		resp, err := w.Client.SendMessage(ctx, target, message)
+		return resp.ID, err
+	})
+	if err != nil {
+		return err
+	}
+	lastMessageId = msg
+	w.recordSentMessage(msg)
+	return nil
 }
 
 func parseJID(raw string) (types.JID, error) {
@@ -177,6 +201,12 @@ func (w *WhatsAppClient) ForwardMessage(req models.ForwardRequest) []models.Forw
 				}
 			}
 
+			if err := w.waitSendTurn(w.Ctx); err != nil {
+				result.Success = false
+				result.Error = err.Error()
+				results = append(results, result)
+				continue
+			}
 			sentMsg, err := w.Client.SendMessage(w.Ctx, jid, waMessage)
 			if err != nil {
 				result.Success = false
@@ -203,6 +233,12 @@ func (w *WhatsAppClient) ForwardMessage(req models.ForwardRequest) []models.Forw
 				}
 			}
 
+			if err := w.waitSendTurn(w.Ctx); err != nil {
+				result.Success = false
+				result.Error = err.Error()
+				results = append(results, result)
+				continue
+			}
 			sentMsg, err := w.Client.SendMessage(w.Ctx, jid, waMessage)
 			if err != nil {
 				result.Success = false

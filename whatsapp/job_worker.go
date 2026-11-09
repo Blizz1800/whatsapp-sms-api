@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"time"
+
+	"main/config"
 )
 
 type Gate interface {
@@ -190,4 +192,26 @@ func (w *JobWorker) now() time.Time {
 		return w.Now()
 	}
 	return time.Now()
+}
+
+// StartJobWorker builds a JobWorker from the gateway config and starts it in
+// the background. It is a no-op (with a log line) when the database is not
+// available, so the HTTP API can still serve legacy endpoints.
+func StartJobWorker(client *WhatsAppClient) *JobWorker {
+	cfg := config.Load()
+	worker := NewJobWorker(client, client.SendGate, WorkerConfig{
+		SendTimeout:  time.Duration(cfg.SendTimeoutSeconds) * time.Second,
+		MaxAttempts:  cfg.MaxSendAttempts,
+		BackoffBase:  time.Duration(cfg.RetryBackoffSeconds) * time.Second,
+		BackoffMax:   time.Duration(cfg.RetryBackoffMaxSeconds) * time.Second,
+		PollInterval: time.Duration(cfg.JobPollIntervalMS) * time.Millisecond,
+		StaleAfter:   time.Duration(cfg.JobStaleSeconds) * time.Second,
+		SweepEvery:   cfg.JobSweepInterval,
+	})
+	if db == nil {
+		log.Println("job worker not started: database unavailable")
+		return nil
+	}
+	go worker.Run(context.Background())
+	return worker
 }

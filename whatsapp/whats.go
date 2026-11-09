@@ -34,14 +34,15 @@ const (
 )
 
 type ReceivedMessage struct {
-	ID                string         `json:"id"`
-	From              string         `json:"from"`
-	FromPN            string         `json:"from_pn,omitempty"`
-	Chat              string         `json:"chat,omitempty"`
-	Text              string         `json:"text"`
-	IsFromMe          bool           `json:"is_from_me"`
-	MultimediaType    MultimediaType `json:"multimedia_type,omitempty"`
-	MultimediaCaption string         `json:"multimedia_caption,omitempty"`
+	UpdateID           int64            `json:"update_id,omitempty"`
+	ID                 string           `json:"id"`
+	From               string           `json:"from"`
+	FromPN             string           `json:"from_pn,omitempty"`
+	Chat               string           `json:"chat,omitempty"`
+	Text               string           `json:"text"`
+	IsFromMe           bool             `json:"is_from_me"`
+	MultimediaType     MultimediaType   `json:"multimedia_type,omitempty"`
+	MultimediaCaption  string           `json:"multimedia_caption,omitempty"`
 }
 
 type forwardableMessage struct {
@@ -178,9 +179,12 @@ func (w *WhatsAppClient) getSenderPN(v *events.Message) (string, string) {
 type WhatsAppClient struct {
 	Client *whatsmeow.Client
 	Ctx    context.Context
+	SendGate *SendGate
 
 	mu                  sync.RWMutex
 	receivedMessages    []ReceivedMessage
+	nextUpdateID        int64
+	updatesBufferSize   int
 	forwardableMessages map[string]*forwardableMessage
 	sentMessageIDs      map[string]bool
 	recentSelf          map[string]time.Time
@@ -197,13 +201,29 @@ type WhatsAppClient struct {
 const selfDedupWindow = 30 * time.Second
 
 func NewWhatsAppClient() *WhatsAppClient {
+	cfg := config.Load()
+	buf := cfg.UpdatesBufferSize
+	if buf < 100 {
+		buf = 100
+	}
 	return &WhatsAppClient{
 		Connected:           make(chan struct{}),
 		loginReady:          make(chan struct{}),
+		SendGate:            NewSendGate(cfg.SendRatePerMinute, 250*time.Millisecond),
+		updatesBufferSize:   buf,
 		forwardableMessages: make(map[string]*forwardableMessage),
 		sentMessageIDs:      make(map[string]bool),
 		recentSelf:          make(map[string]time.Time),
 	}
+}
+
+// waitSendTurn espera el turno del rate limiter compartido. Nunca bloquea
+// más allá del contexto; si la puerta no está inicializada, pasa directo.
+func (w *WhatsAppClient) waitSendTurn(ctx context.Context) error {
+	if w.SendGate == nil {
+		return nil
+	}
+	return w.SendGate.Wait(ctx)
 }
 
 func (w *WhatsAppClient) recordSentMessage(id string) {
@@ -230,6 +250,75 @@ func (w *WhatsAppClient) GetReceivedMessages() []ReceivedMessage {
 	result := make([]ReceivedMessage, len(w.receivedMessages))
 	copy(result, w.receivedMessages)
 	return result
+}
+
+// appendReceivedMessage assigns a monotonic update_id, appends the message to
+// the received buffer, trims the oldest entries to the buffer size, and
+// returns the message with its update_id populated. It must be called with
+// w.mu held by the caller? No: it locks internally.
+func (w *WhatsAppClient) appendReceivedMessage(rm ReceivedMessage) ReceivedMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.nextUpdateID++
+	rm.UpdateID = w.nextUpdateID
+	w.receivedMessages = append(w.receivedMessages, rm)
+	if w.updatesBufferSize > 0 && len(w.receivedMessages) > w.updatesBufferSize {
+		trim := len(w.receivedMessages) - w.updatesBufferSize
+		w.receivedMessages = w.receivedMessages[trim:]
+	}
+	return rm
+}
+
+// GetUpdates returns received messages with update_id > offset, capped at
+// limit (clamped to 1..500). If timeout > 0 it polls every 100 ms until new
+// messages appear or timeout/ctx cancellation. timeout 0 returns immediately.
+func (w *WhatsAppClient) GetUpdates(ctx context.Context, offset int64, limit int, timeout time.Duration) []Update {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	poll := 100 * time.Millisecond
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		for {
+			got := w.updatesSnapshot(offset, limit)
+			if len(got) > 0 {
+				return got
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-timer.C:
+				return nil
+			case <-time.After(poll):
+			}
+		}
+	}
+	return w.updatesSnapshot(offset, limit)
+}
+
+func (w *WhatsAppClient) updatesSnapshot(offset int64, limit int) []Update {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var out []Update
+	for _, rm := range w.receivedMessages {
+		if rm.UpdateID > offset {
+			out = append(out, Update{UpdateID: rm.UpdateID, Message: rm})
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// Update wraps a received message with its monotonic update_id.
+type Update struct {
+	UpdateID int64           `json:"update_id"`
+	Message  ReceivedMessage `json:"message"`
 }
 
 func (w *WhatsAppClient) EventHandler(evt interface{}) {
@@ -276,9 +365,9 @@ func (w *WhatsAppClient) EventHandler(evt interface{}) {
 			rm.MultimediaCaption = fm.imageCaption
 		}
 
-		w.mu.Lock()
-		w.receivedMessages = append(w.receivedMessages, rm)
+		rm = w.appendReceivedMessage(rm)
 		// Always store forwardable data keyed by ID
+		w.mu.Lock()
 		if w.forwardableMessages == nil {
 			w.forwardableMessages = make(map[string]*forwardableMessage)
 		}
@@ -305,7 +394,7 @@ func (w *WhatsAppClient) ProtectMessage(id string) bool {
 		if fm == nil {
 			return false
 		}
-		return true
+		return SaveForwardableMessage(id, fm.senderLID, fm)
 	}
 
 	return SaveForwardableMessage(id, fm.senderLID, fm)
@@ -460,6 +549,14 @@ func (w *WhatsAppClient) GetGroupsAndNewsletters() ([]models.GroupItem, error) {
 	}
 
 	return items, nil
+}
+
+func (w *WhatsAppClient) Identity() (id, phone, name string, ok bool) {
+	if !w.IsConnected() || w.Client == nil || w.Client.Store.ID == nil {
+		return "", "", "", false
+	}
+	jid := w.Client.Store.ID.ToNonAD()
+	return jid.String(), jid.User, w.Client.Store.PushName, true
 }
 
 func (w *WhatsAppClient) Connect() {

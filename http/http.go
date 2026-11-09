@@ -22,6 +22,15 @@ func SetupHandlers(client *whatsapp.WhatsAppClient) {
 	http.Handle("/message/unprotect", http.HandlerFunc(handlers.UnprotectMessageHandler))
 	http.Handle("/forward_received", http.HandlerFunc(handlers.ForwardReceivedHandler))
 	http.Handle("/groups", http.HandlerFunc(handlers.GroupsHandler))
+	http.HandleFunc("POST /messages", handlers.CreateMessageHandler)
+	http.HandleFunc("GET /jobs/{id}", handlers.GetJobHandler)
+	http.HandleFunc("GET /jobs", handlers.ListJobsHandler)
+	http.HandleFunc("POST /jobs/{id}/retry", handlers.RetryJobHandler)
+	http.HandleFunc("POST /sendMessage", handlers.SendMessageSyncHandler)
+	http.HandleFunc("GET /getMe", handlers.GetMeHandler)
+	http.HandleFunc("GET /getChats", handlers.GetChatsHandler)
+	http.HandleFunc("GET /getUpdates", handlers.GetUpdatesHandler)
+	http.HandleFunc("GET /stats", handlers.StatsHandler)
 }
 
 func Serve() {

@@ -186,6 +186,48 @@ func GetJob(ctx context.Context, id string) (*Job, error) {
 	return job, nil
 }
 
+func GetJobs(ctx context.Context, ids []string) ([]Job, error) {
+	if db == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	if len(ids) == 0 {
+		return []Job{}, nil
+	}
+	query := "SELECT id, session_id, idempotency_key, chat_id, payload, priority, status, " +
+		"attempts, max_attempts, next_attempt_at, last_error, result, generation, " +
+		"created_at, updated_at, started_at, finished_at FROM message_jobs WHERE id IN ("
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			query += ", "
+		}
+		if config.Load().DBType == "sqlite" {
+			query += "?"
+		} else {
+			query += fmt.Sprintf("$%d", i+1)
+		}
+		args[i] = id
+	}
+	query += ") ORDER BY created_at ASC"
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list message jobs: %w", err)
+	}
+	defer rows.Close()
+	jobs := make([]Job, 0, len(ids))
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, *job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message jobs: %w", err)
+	}
+	return jobs, nil
+}
+
 func getJobByIdempotencyKey(ctx context.Context, sessionID, idempotencyKey string) (*Job, error) {
 	query, err := loadQuery("get_job_by_idempotency_key")
 	if err != nil {

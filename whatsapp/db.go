@@ -66,8 +66,44 @@ func createTables() error {
 	if err := runQuery("create_table_forwardable_messages"); err != nil {
 		return fmt.Errorf("create forwardable messages table: %w", err)
 	}
+	if cfg := config.Load(); cfg.DBType == "postgres" {
+		if err := runQuery("alter_forwardable_messages_protected"); err != nil {
+			return fmt.Errorf("migrate forwardable messages protected: %w", err)
+		}
+	} else {
+		if err := addProtectedColumnSQLite(); err != nil {
+			return fmt.Errorf("migrate forwardable messages protected: %w", err)
+		}
+	}
 	if err := runQuery("create_table_message_jobs"); err != nil {
 		return fmt.Errorf("create message jobs table: %w", err)
+	}
+	return nil
+}
+
+func addProtectedColumnSQLite() error {
+	query := "PRAGMA table_info(forwardable_messages)"
+	rows, err := db.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasProtected := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "protected" {
+			hasProtected = true
+			break
+		}
+	}
+	if !hasProtected {
+		return runQuery("alter_forwardable_messages_protected")
 	}
 	return nil
 }
@@ -94,7 +130,7 @@ func SaveForwardableMessage(messageID, senderLID string, fm *forwardableMessage)
 		messageID, senderLID, fm.text, fm.imageURL, fm.imageDirectPath,
 		fm.imageMediaKey, fm.imageFileEncSHA256, fm.imageFileSHA256,
 		fm.imageFileLength, fm.imageMimeType, fm.imageCaption, fm.imageJPEGThumbnail,
-		fm.imageHeight, fm.imageWidth,
+		fm.imageHeight, fm.imageWidth, 1,
 	)
 	if err != nil {
 		fmt.Printf("Error saving forwardable message: %v\n", err)
@@ -144,10 +180,12 @@ func DeleteOldForwardableMessages(retentionDays int) int64 {
 	if db == nil {
 		return 0
 	}
-	res, err := db.Exec(
-		"DELETE FROM forwardable_messages WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
-		retentionDays,
-	)
+	query, err := loadQuery("delete_old_forwardable_messages")
+	if err != nil {
+		fmt.Printf("Error loading delete old forwardable messages query: %v\n", err)
+		return 0
+	}
+	res, err := db.Exec(query, retentionDays)
 	if err != nil {
 		fmt.Printf("Error cleaning old forwardable messages: %v\n", err)
 		return 0

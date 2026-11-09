@@ -13,5 +13,6 @@ CREATE TABLE IF NOT EXISTS forwardable_messages (
 	image_jpeg_thumbnail BYTEA,
 	image_height INTEGER,
 	image_width INTEGER,
-	created_at TIMESTAMP DEFAULT NOW()
+	created_at TIMESTAMP DEFAULT NOW(),
+	protected INTEGER NOT NULL DEFAULT 0
 );

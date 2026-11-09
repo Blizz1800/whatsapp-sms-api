@@ -236,3 +236,11 @@ func parseJIDStrict(raw string) (types.JID, error) {
 	}
 	return jid, nil
 }
+
+func ValidateChatID(raw string) error {
+	if raw == "" || len(raw) > 128 {
+		return errors.New("chat_id must be non-empty and at most 128 bytes")
+	}
+	_, err := parseJIDStrict(raw)
+	return err
+}

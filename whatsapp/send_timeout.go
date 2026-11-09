@@ -31,6 +31,9 @@ func sendRecipient(ctx context.Context, timeout time.Duration, send func(context
 // sendToRecipient envía a un destinatario con timeout y deja un log por
 // destinatario para poder identificar grupos que fallan o tardan demasiado.
 func (w *WhatsAppClient) sendToRecipient(recipient string, jid types.JID, msg *waE2E.Message) models.ForwardResult {
+	if err := w.waitSendTurn(w.Ctx); err != nil {
+		return models.ForwardResult{Recipient: recipient, Success: false, Error: err.Error()}
+	}
 	id, elapsed, err := sendRecipient(w.Ctx, recipientSendTimeout, func(ctx context.Context) (types.MessageID, error) {
 		resp, err := w.Client.SendMessage(ctx, jid, msg)
 		return resp.ID, err
