@@ -180,6 +180,7 @@ type WhatsAppClient struct {
 	Client *whatsmeow.Client
 	Ctx    context.Context
 	SendGate *SendGate
+	groupCache GroupCache
 
 	mu                  sync.RWMutex
 	receivedMessages    []ReceivedMessage
@@ -210,6 +211,7 @@ func NewWhatsAppClient() *WhatsAppClient {
 		Connected:           make(chan struct{}),
 		loginReady:          make(chan struct{}),
 		SendGate:            NewSendGate(cfg.SendRatePerMinute, 250*time.Millisecond),
+		groupCache:          NewMemoryGroupCache(time.Hour),
 		updatesBufferSize:   buf,
 		forwardableMessages: make(map[string]*forwardableMessage),
 		sentMessageIDs:      make(map[string]bool),
@@ -500,6 +502,16 @@ func canWriteGroup(g *types.GroupInfo, botJID types.JID) bool {
 }
 
 func (w *WhatsAppClient) GetGroupsAndNewsletters() ([]models.GroupItem, error) {
+	w.mu.RLock()
+	cache := w.groupCache
+	w.mu.RUnlock()
+
+	if cache != nil {
+		if groups, hit, err := cache.Get(context.Background()); err == nil && hit {
+			return groups, nil
+		}
+	}
+
 	var items []models.GroupItem
 	index := 1
 
@@ -548,7 +560,22 @@ func (w *WhatsAppClient) GetGroupsAndNewsletters() ([]models.GroupItem, error) {
 		}
 	}
 
+	w.mu.RLock()
+	cache = w.groupCache
+	w.mu.RUnlock()
+	if cache != nil {
+		_ = cache.Set(context.Background(), items)
+	}
+
 	return items, nil
+}
+
+// SetGroupCache inyecta una implementación de GroupCache (por ejemplo Redis).
+// Se llama antes de usar GetGroupsAndNewsletters; si es nil, no se cachea.
+func (w *WhatsAppClient) SetGroupCache(cache GroupCache) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.groupCache = cache
 }
 
 func (w *WhatsAppClient) Identity() (id, phone, name string, ok bool) {
@@ -636,3 +663,4 @@ func (w *WhatsAppClient) Disconnect() {
 	// Disconnect the client when done
 	w.Client.Disconnect()
 }
+
