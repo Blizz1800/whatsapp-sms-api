@@ -207,6 +207,10 @@ func NewWhatsAppClient() *WhatsAppClient {
 	if buf < 100 {
 		buf = 100
 	}
+	
+	whatsmeow.KeepAliveIntervalMin = 8 * time.Second
+	whatsmeow.KeepAliveIntervalMax = 12 * time.Second
+
 	return &WhatsAppClient{
 		Connected:           make(chan struct{}),
 		loginReady:          make(chan struct{}),
